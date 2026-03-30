@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage/
+htmlcov/
+.tox/
+.nox/
+
+# Virtual environments
+.Python
+env/
+venv/
+.venv/
+
+# Local config and secrets
+.env
+.env.*
+!.env.example
+config.yaml
+*.local.yaml
+
+# Application data
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Frontend build artifacts
+node_modules/
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Local OTP/OpenTripPlanner data
+otp-routing/assets/
+otp-routing/gtfs_backup/
+otp-routing/*.jar
+otp-routing/*.osm.pbf
+otp-routing/*.zip
+otp-routing/*.graph
+java_version_check.tmp
+
+# Internal notes and raw scrape fixtures
+docs/prompt.md
+docs/web/todo.md
+docs/scrape/
+
+# Operating system / editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

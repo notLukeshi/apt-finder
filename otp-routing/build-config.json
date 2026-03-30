@@ -1,0 +1,10 @@
+{
+  "osm": [
+    {
+      "source": "kanto-260125.osm.pbf",
+      "timeZone": "Asia/Tokyo"
+    }
+  ],
+  "maxStopToShapeSnapDistance": 500.0,
+  "dataImportReport": true
+}

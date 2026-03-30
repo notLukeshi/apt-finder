@@ -1,0 +1,11 @@
+include README.md
+include LICENSE
+include .env.example
+include config.example.yaml
+recursive-include src *.sql
+include docs/architecture.md
+include docs/scraping-ethics.md
+include docs/web/local_network_setup.md
+include docs/otp-routing/OTP_CONFIG.md
+include docs/otp-routing/route_setup.md
+include docs/otp-routing/gtfs_list.md

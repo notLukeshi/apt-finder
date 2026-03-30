@@ -1,0 +1,46 @@
+price_range:
+  min: 50000  # yen
+  max: 150000 # yen
+
+distance:
+  # true = average Google Maps bicycle time with OTP bicycle time
+  # false = use OTP bicycle time only
+  use_google_maps_bike_calculation: true
+
+  geocoding:
+    # google = Google Maps Platform geocoding
+    # nominatim = API-free OpenStreetMap Nominatim geocoding
+    provider: google
+
+    nominatim:
+      base_url: "https://nominatim.openstreetmap.org"
+      # Use a meaningful identifier for your app and contact email for public Nominatim.
+      user_agent: "APT-Finder/1.0 (contact: you@example.com)"
+      email: "you@example.com"
+      # Keep public Nominatim requests slow and contained to avoid bans.
+      min_delay_seconds: 1.0
+      # Total geocode requests per run (apartments + targets).
+      max_requests_per_run: 25
+
+targets:
+  - name: "Office"
+    address: "Tokyo Station, Tokyo, Japan"
+    arrival_time: "09:00"
+    arrival_day: "Monday"
+
+websites:
+  - name: "TokyoMonthly"
+    base_url: "https://tokyomonthly.com/properties/"
+    is_active: true
+  - name: "UnionMonthly"
+    base_url: "https://www.unionmonthly.jp/tokyo/room/"
+    is_active: false
+  - name: "WeeklyMonthly"
+    base_url: "https://weeklyandmonthly.com/srch/pref_13/"
+    is_active: false
+  - name: "GoodMonthly"
+    base_url: "https://www.good-monthly.com/tokyo/search/list_pref.html"
+    is_active: false
+  - name: "Shintoshin"
+    base_url: "https://www.monthly-shintoshin.com/search/list.html"
+    is_active: false
