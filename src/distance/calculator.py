@@ -39,17 +39,31 @@ class DistanceCalculator:
         self.use_google_maps_bike_calculation = self.distance_config.use_google_maps_bike_calculation
         self.geocoding_provider = self.distance_config.geocoding.provider.lower().strip()
         self.nominatim_config = self.distance_config.geocoding.nominatim
+        self.jageocoder_config = self.distance_config.geocoding.jageocoder
         self._google_maps_client: googlemaps.Client | None = None
         self._google_maps_api_key: Optional[str] = None
         self._nominatim_session = requests.Session()
         self._nominatim_session.headers.update({"User-Agent": self.nominatim_config.user_agent})
         self._nominatim_requests_made = 0
         self._nominatim_last_request_at = 0.0
+        self._jageocoder_initialized = False
+        self._jageocoder_last_request_at = 0.0
+        self._arrival_time_cache: dict[int, Optional[datetime]] = {}
 
-        if self.geocoding_provider not in {"google", "nominatim"}:
+        if self.geocoding_provider not in {"google", "nominatim", "jageocoder"}:
             raise ValueError(
-                f"Unsupported geocoding provider: {self.geocoding_provider!r}. Use 'google' or 'nominatim'."
+                f"Unsupported geocoding provider: {self.geocoding_provider!r}. "
+                "Use 'google', 'nominatim', or 'jageocoder'."
             )
+
+        if self.geocoding_provider == "jageocoder":
+            try:
+                import jageocoder
+                self._jageocoder_module = jageocoder
+            except ImportError as exc:
+                raise ValueError(
+                    "jageocoder is not installed. Install it with: pip install jageocoder"
+                ) from exc
 
         if self.geocoding_provider == "google" or self.use_google_maps_bike_calculation:
             api_key = os.getenv("GOOGLE_MAPS_API_KEY")
@@ -112,6 +126,8 @@ class DistanceCalculator:
         try:
             if self.geocoding_provider == "nominatim":
                 return self._geocode_with_nominatim(address)
+            if self.geocoding_provider == "jageocoder":
+                return self._geocode_with_jageocoder(address)
             return self._geocode_with_google(address)
         except Exception as e:
             logger.error(f"Geocoding failed: {e}")
@@ -178,6 +194,60 @@ class DistanceCalculator:
             time.sleep(min_delay - elapsed)
         self._nominatim_last_request_at = time.monotonic()
 
+    def _geocode_with_jageocoder(self, address: str) -> Optional[Tuple[float, float]]:
+        """Geocode using jageocoder (offline dictionary or remote server).
+
+        jageocoder returns coordinates as x=longitude, y=latitude.
+        This method converts to the (lat, lon) tuple used throughout the codebase.
+        """
+        jageocoder = self._jageocoder_module
+
+        if not self._jageocoder_initialized:
+            try:
+                # Pass url explicitly (None = local DB) to avoid implicit env var fallback.
+                jageocoder.init(url=self.jageocoder_config.server_url)
+            except Exception as e:
+                logger.error(
+                    "jageocoder init failed (server_url=%r): %s",
+                    self.jageocoder_config.server_url,
+                    e,
+                )
+                return None
+            self._jageocoder_initialized = True
+
+        # Rate-limit only when using a remote server (local DB has no concurrency concerns)
+        if self.jageocoder_config.server_url:
+            self._respect_jageocoder_rate_limit()
+
+        try:
+            result = jageocoder.search(address)
+        except Exception as e:
+            logger.error(f"jageocoder search failed for {address[:50]}...: {e}")
+            return None
+
+        candidates = result.get("candidates", []) if isinstance(result, dict) else []
+        if not candidates:
+            logger.warning(f"No jageocoder results for: {address[:50]}...")
+            return None
+
+        candidate = candidates[0]
+        try:
+            lat = float(candidate["y"])
+            lon = float(candidate["x"])
+        except (KeyError, TypeError, ValueError) as e:
+            logger.error(f"jageocoder returned malformed coordinates for {address[:50]}...: {e}")
+            return None
+
+        logger.info(f"Geocoded with jageocoder: {address[:40]}... -> ({lat:.4f}, {lon:.4f})")
+        return (lat, lon)
+
+    def _respect_jageocoder_rate_limit(self) -> None:
+        min_delay = self.jageocoder_config.min_delay_seconds
+        elapsed = time.monotonic() - self._jageocoder_last_request_at
+        if self._jageocoder_last_request_at > 0 and elapsed < min_delay:
+            time.sleep(min_delay - elapsed)
+        self._jageocoder_last_request_at = time.monotonic()
+
     def _get_google_bike_time(
         self, from_lat: float, from_lon: float, to_lat: float, to_lon: float
     ) -> Optional[int]:
@@ -199,12 +269,12 @@ class DistanceCalculator:
     def calculate(self, apartment: Apartment, target: Target) -> Optional[Distance]:
         """
         Calculate distance between apartment and target.
-        
+
         Uses:
-        - OTP for WALK+TRANSIT and BICYCLE+TRANSIT routes
+        - OTP for WALK+TRANSIT and BICYCLE+TRANSIT routes (batched in a single request)
         - Google Maps + OTP average for BICYCLE-only route when enabled
         - OTP-only bicycle routing when Google Maps bike calculation is disabled
-        
+
         Returns Distance with three route options:
         - time_transit_walk_minutes: WALK + TRANSIT (OTP)
         - time_transit_bike_minutes: BICYCLE + TRANSIT (OTP)
@@ -217,19 +287,19 @@ class DistanceCalculator:
         # Get coordinates
         origin_coords = self._get_coords_for_address(apartment.address)
         target_coords = self._get_coords_for_target(target)
-        
+
         if not origin_coords:
             logger.warning(f"No coordinates for apartment: {apartment.name[:30]}...")
             return None
         if not target_coords:
             logger.warning(f"No coordinates for target: {target.name}")
             return None
-        
+
         from_lat, from_lon = origin_coords
         to_lat, to_lon = target_coords
 
-        # Calculate arrival time for transit based on target settings
-        arrival_time = self._get_arrival_datetime(target)
+        # Calculate arrival time for transit (cached per target)
+        arrival_time = self._get_arrival_datetime_cached(target)
         logger.debug(f"Using arrival_time: {arrival_time}")
 
         logger.debug(
@@ -242,35 +312,29 @@ class DistanceCalculator:
         bike_transit_min = None
         bike_only_min = None
         distance_km = None
+        otp_bike_min = None
 
-        # Get OTP routes if available
+        # Get all OTP routes in a single batched request
         if self.otp_client.is_available():
-            # 1. WALK + TRANSIT (walk to station, take train)
-            walk_transit_result = self.otp_client.get_walk_transit_route(
+            routes = self.otp_client.get_routes_batch(
                 from_lat, from_lon, to_lat, to_lon, arrive_by=arrival_time
             )
+
+            walk_transit_result = routes.get("walk_transit")
             walk_transit_min = walk_transit_result.duration_minutes if walk_transit_result else None
-            
-            # 2. BICYCLE + TRANSIT (bike to station, take train)
-            bike_transit_result = self.otp_client.get_bike_transit_route(
-                from_lat, from_lon, to_lat, to_lon, arrive_by=arrival_time
-            )
+
+            bike_transit_result = routes.get("bike_transit")
             bike_transit_min = bike_transit_result.duration_minutes if bike_transit_result else None
-            
-            # 3. OTP BICYCLE only
-            otp_bike_result = self.otp_client.get_bike_only_route(
-                from_lat, from_lon, to_lat, to_lon
-            )
+
+            otp_bike_result = routes.get("bike_only")
             otp_bike_min = otp_bike_result.duration_minutes if otp_bike_result else None
-            
-            # Get distance from OTP bike route
+
             if otp_bike_result and otp_bike_result.distance_km:
                 distance_km = otp_bike_result.distance_km
         else:
             logger.warning("OTP server not available, transit routes will be unavailable")
-            otp_bike_min = None
 
-        # 4. BICYCLE-only route
+        # Google Maps bicycle route (optional)
         google_bike_min = None
         if self.use_google_maps_bike_calculation:
             google_bike_min = self._get_google_bike_time(from_lat, from_lon, to_lat, to_lon)
@@ -303,11 +367,11 @@ class DistanceCalculator:
             (bike_only_min, "bike"),
         ]
         valid_times = [(t, m) for t, m in times if t is not None]
-        
+
         if not valid_times:
             logger.warning("No valid routes found")
             return None
-        
+
         min_time, selected_mode = min(valid_times, key=lambda x: x[0])
 
         return Distance(
@@ -337,7 +401,7 @@ class DistanceCalculator:
 
     def _get_arrival_datetime(self, target: Target) -> Optional[datetime]:
         """Get next occurrence of target arrival time in Japan timezone.
-        
+
         Uses the target's arrival_time and arrival_day settings.
         Always calculates in Japan timezone for accurate transit results.
         """
@@ -352,7 +416,7 @@ class DistanceCalculator:
         # Use Japan timezone for calculations
         jst = ZoneInfo("Asia/Tokyo")
         now_jst = datetime.now(jst)
-        
+
         target_day = day_map.get(target.arrival_day, 0)
         days_ahead = target_day - now_jst.weekday()
         if days_ahead <= 0:
@@ -364,3 +428,11 @@ class DistanceCalculator:
 
         logger.debug(f"Calculated arrival time: {arrival} (JST)")
         return arrival
+
+    def _get_arrival_datetime_cached(self, target: Target) -> Optional[datetime]:
+        """Cached version of _get_arrival_datetime per target id."""
+        if target.id is None:
+            return self._get_arrival_datetime(target)
+        if target.id not in self._arrival_time_cache:
+            self._arrival_time_cache[target.id] = self._get_arrival_datetime(target)
+        return self._arrival_time_cache[target.id]

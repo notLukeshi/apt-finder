@@ -10,6 +10,7 @@ distance:
   geocoding:
     # google = Google Maps Platform geocoding
     # nominatim = API-free OpenStreetMap Nominatim geocoding
+    # jageocoder = offline Japanese address dictionary (best coverage for JP addresses)
     provider: google
 
     nominatim:
@@ -21,6 +22,14 @@ distance:
       min_delay_seconds: 1.0
       # Total geocode requests per run (apartments + targets).
       max_requests_per_run: 25
+
+    jageocoder:
+      # When null, uses a locally installed dictionary database (no network, no rate limit).
+      # Set to a jageocoder-server endpoint to use a remote server instead.
+      # Public demo server: https://jageocoder.info-proto.com/jsonrpc
+      server_url: null
+      # Minimum delay between requests (only enforced when server_url is set).
+      min_delay_seconds: 0.5
 
 targets:
   - name: "Office"

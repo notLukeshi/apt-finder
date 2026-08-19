@@ -35,9 +35,23 @@ class NominatimConfig:
 
 
 @dataclass
+class JageocoderConfig:
+    """Configuration for the jageocoder provider.
+
+    When ``server_url`` is ``None``, jageocoder uses a locally installed
+    dictionary database (no network, no rate limit). When ``server_url`` is
+    set, requests go to a remote jageocoder-server endpoint and
+    ``min_delay_seconds`` is enforced client-side.
+    """
+    server_url: Optional[str] = None
+    min_delay_seconds: float = 0.5
+
+
+@dataclass
 class GeocodingConfig:
     provider: str = "google"
     nominatim: NominatimConfig = field(default_factory=NominatimConfig)
+    jageocoder: JageocoderConfig = field(default_factory=JageocoderConfig)
 
 
 @dataclass
@@ -159,9 +173,9 @@ def _load_geocoding_config(raw: Any, config_path: Path) -> GeocodingConfig:
         raise ValueError(f"'distance.geocoding' must be a mapping in {config_path}")
 
     provider = str(raw.get("provider", "google")).strip().lower()
-    if provider not in {"google", "nominatim"}:
+    if provider not in {"google", "nominatim", "jageocoder"}:
         raise ValueError(
-            f"'distance.geocoding.provider' must be either 'google' or 'nominatim' in {config_path}"
+            f"'distance.geocoding.provider' must be 'google', 'nominatim', or 'jageocoder' in {config_path}"
         )
 
     raw_nominatim = raw.get("nominatim", {})
@@ -170,9 +184,16 @@ def _load_geocoding_config(raw: Any, config_path: Path) -> GeocodingConfig:
     if not isinstance(raw_nominatim, dict):
         raise ValueError(f"'distance.geocoding.nominatim' must be a mapping in {config_path}")
 
+    raw_jageocoder = raw.get("jageocoder", {})
+    if raw_jageocoder is None:
+        raw_jageocoder = {}
+    if not isinstance(raw_jageocoder, dict):
+        raise ValueError(f"'distance.geocoding.jageocoder' must be a mapping in {config_path}")
+
     return GeocodingConfig(
         provider=provider,
         nominatim=_load_nominatim_config(raw_nominatim, config_path),
+        jageocoder=_load_jageocoder_config(raw_jageocoder, config_path),
     )
 
 
@@ -221,4 +242,30 @@ def _load_nominatim_config(raw: Any, config_path: Path) -> NominatimConfig:
         email=email,
         min_delay_seconds=min_delay_seconds,
         max_requests_per_run=max_requests_per_run,
+    )
+
+
+def _load_jageocoder_config(raw: Any, config_path: Path) -> JageocoderConfig:
+    if not isinstance(raw, dict):
+        raise ValueError(f"'distance.geocoding.jageocoder' must be a mapping in {config_path}")
+
+    server_url = raw.get("server_url")
+    if server_url is not None:
+        server_url = str(server_url).strip() or None
+
+    try:
+        min_delay_seconds = float(raw.get("min_delay_seconds", 0.5))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"'distance.geocoding.jageocoder.min_delay_seconds' must be a number in {config_path}"
+        ) from exc
+
+    if min_delay_seconds <= 0:
+        raise ValueError(
+            f"'distance.geocoding.jageocoder.min_delay_seconds' must be greater than zero in {config_path}"
+        )
+
+    return JageocoderConfig(
+        server_url=server_url,
+        min_delay_seconds=min_delay_seconds,
     )

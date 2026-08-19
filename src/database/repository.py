@@ -1,9 +1,13 @@
 from contextlib import contextmanager
+import logging
 from pathlib import Path
 import sqlite3
+import threading
 from typing import Optional
 
 from src.models import Apartment, Address, Target, Distance, DistanceSummary, Website
+
+logger = logging.getLogger(__name__)
 
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
@@ -20,12 +24,22 @@ def _load_schema_sql() -> str:
 class Repository:
     def __init__(self, db_path: Path | str = "apartments.db"):
         self.db_path = Path(db_path)
+        self._write_lock = threading.Lock()
         self._init_db()
 
     def _init_db(self) -> None:
         """Initialize database with schema."""
         with self._connection() as conn:
             conn.executescript(_load_schema_sql())
+            # Enable WAL mode once during init (persistent across connections).
+            # Fall back silently if WAL is unsupported (e.g. network share).
+            try:
+                result = conn.execute("PRAGMA journal_mode = WAL").fetchone()
+                mode = result[0] if result else "unknown"
+                if mode.lower() != "wal":
+                    logger.info(f"WAL mode not available (using {mode}), parallel writes may be slower")
+            except sqlite3.OperationalError:
+                pass
 
     @contextmanager
     def _connection(self):
@@ -290,7 +304,7 @@ class Repository:
     # Distance operations
     def save_distance(self, distance: Distance) -> int:
         """Save distance calculation."""
-        with self._connection() as conn:
+        with self._write_lock, self._connection() as conn:
             cursor = conn.execute(
                 """INSERT INTO distances 
                    (apartment_id, target_id, distance_km, time_minutes, 
@@ -315,7 +329,7 @@ class Repository:
 
     def update_address_coordinates(self, apartment_id: int, lat: float, lng: float) -> None:
         """Update latitude/longitude for an apartment's address."""
-        with self._connection() as conn:
+        with self._write_lock, self._connection() as conn:
             conn.execute(
                 """UPDATE addresses 
                    SET latitude = ?, longitude = ?, geocoded_at = CURRENT_TIMESTAMP
@@ -325,7 +339,7 @@ class Repository:
 
     def update_target_coordinates(self, target_id: int, lat: float, lng: float) -> None:
         """Update latitude/longitude for a target."""
-        with self._connection() as conn:
+        with self._write_lock, self._connection() as conn:
             conn.execute(
                 """UPDATE targets SET latitude = ?, longitude = ? WHERE id = ?""",
                 (lat, lng, target_id),

@@ -19,6 +19,13 @@ class DummyOTPClient:
     def is_available(self) -> bool:
         return self._available
 
+    def get_routes_batch(self, *args, **kwargs):
+        return {
+            "walk_transit": DummyOTPRouteResult(duration_minutes=30, distance_km=5.0),
+            "bike_transit": DummyOTPRouteResult(duration_minutes=20, distance_km=4.5),
+            "bike_only": DummyOTPRouteResult(duration_minutes=18, distance_km=4.2),
+        }
+
     def get_walk_transit_route(self, *args, **kwargs):
         return DummyOTPRouteResult(duration_minutes=30, distance_km=5.0)
 

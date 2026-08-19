@@ -53,6 +53,7 @@ The distance engine now supports two independent switches in `config.yaml`:
 - `distance.geocoding.provider`
   - `google`: geocoding uses Google Maps Platform
   - `nominatim`: geocoding uses the public OpenStreetMap Nominatim service
+  - `jageocoder`: geocoding uses a Japanese address dictionary (offline or remote server)
 
 ### When using Google Maps Platform
 
@@ -82,6 +83,48 @@ Nominatim is API-free, but the public service has strict fair-use expectations. 
 - Keep `distance.geocoding.nominatim.max_requests_per_run` small, such as **25** or another contained batch size
 
 If you use Nominatim, the scraper can run without a Google Maps API key.
+
+### When using jageocoder
+
+jageocoder is a Python library that geocodes Japanese addresses using a dictionary database derived from government data (Address Base Registry + GSI). It has the best coverage for Japanese addresses among the free options.
+
+Two modes are supported:
+
+- **Local database** (default, `server_url: null`): no network, no rate limit, fastest. Requires a one-time dictionary download.
+- **Remote server** (`server_url: https://...`): connects to a jageocoder-server instance. The public demo server has a rate limit.
+
+Setup for local database:
+
+```bash
+pip install jageocoder
+```
+
+Download a dictionary file. The `jageocoder download-dictionary` command may fail silently on some networks; use `curl` as a reliable fallback:
+
+```bash
+# Full dictionary (住居表示・地番, ~4.5 GB, building-level precision):
+curl -L -o jukyo_all_20250423_v22.zip https://www.info-proto.com/static/jageocoder/20250423/v2/jukyo_all_20250423_v22.zip
+jageocoder install-dictionary jukyo_all_20250423_v22.zip
+
+# Or the lighter block-level dictionary (~351 MB, sufficient for routing):
+# curl -L -o gaiku_all_20250423_v22.zip https://www.info-proto.com/static/jageocoder/20250423/v2/gaiku_all_20250423_v22.zip
+# jageocoder install-dictionary gaiku_all_20250423_v22.zip
+```
+
+Check <https://www.info-proto.com/static/jageocoder/latest/v2/> for the latest available dictionary versions.
+
+Then set in `config.yaml`:
+
+```yaml
+distance:
+  geocoding:
+    provider: jageocoder
+    jageocoder:
+      server_url: null
+      min_delay_seconds: 0.5
+```
+
+If you use jageocoder with a local database, the scraper can run without a Google Maps API key and without any external API registration.
 
 ## Quick start
 

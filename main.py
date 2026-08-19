@@ -7,6 +7,7 @@ Scrapes Japanese housing websites and calculates commute distances.
 import argparse
 import logging
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from src.config import load_config
@@ -120,18 +121,24 @@ def geocode_addresses(repo: Repository, calculator: DistanceCalculator):
             logger.info(f"Geocoded: {apt.name[:40]}... -> ({coords[0]:.4f}, {coords[1]:.4f})")
 
 
-def calculate_distances(repo: Repository, calculator: DistanceCalculator, incomplete_only: bool = False):
+def calculate_distances(
+    repo: Repository,
+    calculator: DistanceCalculator,
+    incomplete_only: bool = False,
+    workers: int = 1,
+):
     """Calculate distances for all apartments to all targets.
-    
+
     Args:
         incomplete_only: If True, only calculate for apartments with incomplete distance data
+        workers: Number of parallel workers for distance calculation (1 = sequential)
     """
     targets = repo.get_all_targets()
 
     for target in targets:
         if not target.id:
             continue
-            
+
         if incomplete_only:
             apartments = repo.get_apartments_with_incomplete_distance(target.id)
             logger.info(f"Calculating distances to {target.name} for {len(apartments)} apartments with incomplete data")
@@ -139,23 +146,58 @@ def calculate_distances(repo: Repository, calculator: DistanceCalculator, incomp
             apartments = repo.get_apartments_without_distance(target.id)
             logger.info(f"Calculating distances to {target.name} for {len(apartments)} apartments")
 
-        for apt in apartments:
-            if not apt.address:
-                continue
+        apartments = [apt for apt in apartments if apt.address]
+        if not apartments:
+            continue
 
-            distance = calculator.calculate(apt, target)
-            if distance:
-                repo.save_distance(distance)
-                # Also update coordinates if they were geocoded during calculation
-                if apt.id and apt.address:
-                    coords = calculator._get_coords_for_address(apt.address)
-                    if coords and not apt.address.latitude:
-                        repo.update_address_coordinates(apt.id, coords[0], coords[1])
-                
-                logger.info(
-                    f"Distance: {apt.name} -> {target.name}: "
-                    f"{distance.time_minutes}min ({distance.selected_mode})"
-                )
+        if workers <= 1:
+            _calculate_distances_sequential(repo, calculator, apartments, target)
+        else:
+            _calculate_distances_parallel(repo, calculator, apartments, target, workers)
+
+
+def _calculate_distances_sequential(repo, calculator, apartments, target):
+    """Sequential distance calculation."""
+    for apt in apartments:
+        _process_single_distance(repo, calculator, apt, target)
+
+
+def _calculate_distances_parallel(repo, calculator, apartments, target, workers):
+    """Parallel distance calculation using ThreadPoolExecutor."""
+    completed = 0
+    total = len(apartments)
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(_process_single_distance, repo, calculator, apt, target): apt
+            for apt in apartments
+        }
+        for future in as_completed(futures):
+            apt = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                logger.error(f"Error calculating distance for {apt.name[:30]}...: {e}")
+            completed += 1
+            if completed % 50 == 0 or completed == total:
+                logger.info(f"Progress: {completed}/{total} apartments processed for {target.name}")
+
+
+def _process_single_distance(repo, calculator, apt, target):
+    """Process distance calculation for a single apartment-target pair."""
+    distance = calculator.calculate(apt, target)
+    if distance:
+        repo.save_distance(distance)
+        # Also update coordinates if they were geocoded during calculation
+        if apt.id and apt.address:
+            coords = calculator._get_coords_for_address(apt.address)
+            if coords and not apt.address.latitude:
+                repo.update_address_coordinates(apt.id, coords[0], coords[1])
+
+        logger.info(
+            f"Distance: {apt.name} -> {target.name}: "
+            f"{distance.time_minutes}min ({distance.selected_mode})"
+        )
 
 
 def main():
@@ -169,6 +211,7 @@ def main():
     parser.add_argument("--website", help="Scrape only this website")
     parser.add_argument("--start-page", type=int, help="Start scraping from this page (default: 1)")
     parser.add_argument("--end-page", type=int, help="Stop scraping at this page (default: all)")
+    parser.add_argument("--workers", type=int, default=1, help="Number of parallel workers for distance calculation (default: 1)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args = parser.parse_args()
 
@@ -212,22 +255,18 @@ def main():
                 if not target.id:
                     continue
                 apartments = repo.get_all_apartments_for_distance_recalc(target.id)
+                apartments = [apt for apt in apartments if apt.address]
                 logger.info(f"Recalculating distances to {target.name} for ALL {len(apartments)} apartments")
-                
-                for apt in apartments:
-                    if not apt.address:
-                        continue
-                    distance = calculator.calculate(apt, target)
-                    if distance:
-                        repo.save_distance(distance)
-                        logger.info(
-                            f"Distance: {apt.name} -> {target.name}: "
-                            f"{distance.time_minutes}min ({distance.selected_mode})"
-                        )
+
+                if args.workers <= 1:
+                    for apt in apartments:
+                        _process_single_distance(repo, calculator, apt, target)
+                else:
+                    _calculate_distances_parallel(repo, calculator, apartments, target, args.workers)
         else:
             # Normal calculation (only for incomplete data when --calculate-only)
             incomplete_only = args.calculate_only
-            calculate_distances(repo, calculator, incomplete_only=incomplete_only)
+            calculate_distances(repo, calculator, incomplete_only=incomplete_only, workers=args.workers)
 
     logger.info("Done!")
 
